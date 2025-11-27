@@ -18,19 +18,59 @@ echo "🐳 Installing Docker & Docker Compose..."
 sudo snap install docker || sudo apt-get install -y docker.io docker-compose-plugin
 
 ###############################################################################
-# CLONE REPOS
+# CREATE WORKSPACE
 ###############################################################################
 echo "📁 Creating workspace at ~/doubtfire..."
 mkdir -p ~/doubtfire
 cd ~/doubtfire
 
+###############################################################################
+# CLONE REPO
+###############################################################################
 echo "⬇️ Cloning Doubtfire Deploy (10.0.x branch)..."
 if [ ! -d "doubtfire-deploy" ]; then
   git clone --branch 10.0.x --recurse-submodules https://github.com/doubtfire-lms/doubtfire-deploy
 fi
 
 ###############################################################################
-# WRITE docker-compose.yml
+# PATCH DOCKERFILE (Fix Debian mirror fetch errors)
+###############################################################################
+API_DOCKERFILE="$HOME/doubtfire/doubtfire-deploy/doubtfire-api/Dockerfile"
+
+echo "🔧 Applying Dockerfile reliability patch..."
+if [[ -f "$API_DOCKERFILE" ]]; then
+    cp "$API_DOCKERFILE" "${API_DOCKERFILE}.bak"
+
+    sed -i '/apt-get update/,+25c\
+RUN sed -i '\''s|deb.debian.org|ftp.debian.org|g'\'' /etc/apt/sources.list \\
+  && until apt-get update --fix-missing; do \\
+       echo \"Retrying apt-get update...\"; sleep 3; \\
+     done \\
+  && apt-get install -y --fix-missing \\
+       bc \\
+       ffmpeg \\
+       ghostscript qpdf \\
+       imagemagick \\
+       libmagic-dev \\
+       libmagickwand-dev \\
+       libmariadb-dev \\
+       python3-pygments \\
+       tzdata \\
+       wget \\
+       redis \\
+       libc6-dev \\
+       docker-ce \\
+       docker-ce-cli \\
+       containerd.io \\
+  && apt-get clean' "$API_DOCKERFILE"
+
+    echo "✅ Dockerfile patched successfully!"
+else
+    echo "❌ ERROR: Dockerfile not found at $API_DOCKERFILE"
+fi
+
+###############################################################################
+# WRITE UPDATED docker-compose.yml
 ###############################################################################
 echo "📝 Writing updated docker-compose.yml..."
 
@@ -124,18 +164,24 @@ volumes:
 EOF
 
 ###############################################################################
-# DOCKER COMPOSE COMPAT MODE
+# DOCKER COMPOSE PROGRESS UI HANDLING
 ###############################################################################
-echo "🔍 Checking Docker Compose availability..."
+echo "🔍 Detecting Docker Compose version..."
+
+export COMPOSE_PROGRESS=auto
+export COMPOSE_DISABLE_SPINNER=false
+
+# Default command
+COMPOSE_CMD="sudo docker compose up -d --build"
 
 if docker compose version >/dev/null 2>&1; then
-    echo "✨ Docker Compose recognized — using: docker compose up -d --build"
-    COMPOSE_CMD="docker compose up -d --build"
+    echo "✨ Docker Compose v2 detected — enabling pretty progress UI!"
+    COMPOSE_CMD="sudo docker compose up -d --build --progress=tty"
 elif docker-compose version >/dev/null 2>&1; then
-    echo "⚠ Using legacy docker-compose — enabling fallback UI"
-    COMPOSE_CMD="docker-compose up -d --build"
+    echo "⚠ Docker Compose v1 detected — using fallback (simulated UI)"
+    COMPOSE_CMD="sudo docker-compose up -d --build"
 else
-    echo "❌ ERROR: No docker compose available"
+    echo "❌ No Docker Compose found"
     exit 1
 fi
 
@@ -144,7 +190,7 @@ fi
 ###############################################################################
 echo "🚀 Starting Doubtfire DEV environment..."
 cd ~/doubtfire/doubtfire-deploy/development
-sudo $COMPOSE_CMD
+$COMPOSE_CMD
 
 echo "📡 Streaming logs (Ctrl+C to stop)..."
-sudo $COMPOSE_CMD logs -f || sudo docker compose logs -f
+docker compose logs -f || docker-compose logs -f
