@@ -6,16 +6,6 @@ echo "   🚀 Doubtfire LMS – Automated DEV Installer"
 echo "====================================================="
 
 ### ----------------------------------------------------
-### 0. Safety check
-### ----------------------------------------------------
-if [[ "$EUID" -ne 0 ]]; then
-  echo "🛑 Please run with sudo:   sudo ./install_doubtfire_dev.sh"
-  exit 1
-fi
-
-USER_HOME="/home/$SUDO_USER"
-
-### ----------------------------------------------------
 ### 1. Install Docker Engine
 ### ----------------------------------------------------
 echo "📦 Installing Docker Engine..."
@@ -41,42 +31,57 @@ apt-get update --fix-missing
 apt-get install -y \
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 
-systemctl enable docker
-systemctl start docker
+systemctl enable docker || true
+systemctl start docker || true
 
 echo "✔ Docker installed."
 
+
 ### ----------------------------------------------------
-### 2. Install Docker Compose v2 (official plugin)
+### 2. Remove ALL old Compose versions
+### ----------------------------------------------------
+echo "🧹 Removing old Docker Compose installations..."
+
+apt remove -y docker-compose-plugin docker-compose || true
+
+rm -f /usr/bin/docker-compose
+rm -f /usr/local/bin/docker-compose
+rm -f /usr/libexec/docker/cli-plugins/docker-compose
+rm -f /usr/lib/docker/cli-plugins/docker-compose
+
+echo "✔ Old Compose removed."
+
+
+### ----------------------------------------------------
+### 3. Install Docker Compose v2 (latest official)
 ### ----------------------------------------------------
 echo "🔧 Installing Docker Compose v2..."
-
-PLUGIN_DIR="/usr/libexec/docker/cli-plugins"
-mkdir -p "$PLUGIN_DIR"
 
 LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest \
   | grep browser_download_url \
   | grep 'docker-compose-linux-x86_64"' \
   | cut -d '"' -f 4)
 
-curl -L "$LATEST_COMPOSE" -o "$PLUGIN_DIR/docker-compose"
-chmod +x "$PLUGIN_DIR/docker-compose"
+mkdir -p /usr/lib/docker/cli-plugins
 
-rm -f /usr/bin/docker-compose
-rm -f /usr/local/bin/docker-compose
+curl -L "$LATEST_COMPOSE" \
+  -o /usr/lib/docker/cli-plugins/docker-compose
 
-ln -sf "$PLUGIN_DIR/docker-compose" /usr/local/bin/docker-compose
+chmod +x /usr/lib/docker/cli-plugins/docker-compose
+
+ln -sf /usr/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
 
 echo "✔ Docker Compose v2 installed:"
 docker compose version
 
-### ----------------------------------------------------
-### 3. Clone Doubtfire Deploy
-### ----------------------------------------------------
-echo "📥 Cloning doubtfire-deploy repo..."
 
-mkdir -p "$USER_HOME/doubtfire"
-cd "$USER_HOME/doubtfire"
+### ----------------------------------------------------
+### 4. Clone Doubtfire Deploy
+### ----------------------------------------------------
+echo "📥 Cloning doubtfire-deploy repo (dev)..."
+
+mkdir -p /home/$SUDO_USER/doubtfire
+cd /home/$SUDO_USER/doubtfire
 
 git clone --branch 10.0.x --recurse-submodules https://github.com/doubtfire-lms/doubtfire-deploy
 
@@ -85,25 +90,28 @@ git submodule update --init --recursive
 
 echo "✔ Repositories cloned."
 
+
 ### ----------------------------------------------------
-### 4. Patch Dockerfiles
+### 5. PATCH Dockerfiles for reliability
 ### ----------------------------------------------------
 echo "🔧 Patching Dockerfiles for reliability..."
 
-find . -name "Dockerfile" | while read -r file; do
+for file in $(find . -name Dockerfile); do
   echo "Patching: $file"
+
   sed -i 's/apt-get update/apt-get update --fix-missing/g' "$file"
   sed -i 's/apt-get install -y/apt-get install -y --fix-missing/g' "$file"
 done
 
 echo "✔ All Dockerfiles patched."
 
-### ----------------------------------------------------
-### 5. Write fixed docker-compose.yml
-### ----------------------------------------------------
-echo "📝 Updating docker-compose.yml..."
 
-cat > "$USER_HOME/doubtfire/doubtfire-deploy/development/docker-compose.yml" <<'EOF'
+### ----------------------------------------------------
+### 6. Replace docker-compose.yml with improved version
+### ----------------------------------------------------
+echo "📝 Writing improved docker-compose.yml..."
+
+cat > /home/$SUDO_USER/doubtfire/doubtfire-deploy/development/docker-compose.yml <<'EOF'
 services:
   dev-db:
     image: mariadb
@@ -129,6 +137,7 @@ services:
   doubtfire-api:
     container_name: doubtfire-api
     build: ../doubtfire-api
+    image: lmsdoubtfire/doubtfire-api:10.0.x-dev
     ports:
       - "3000:3000"
     depends_on:
@@ -148,6 +157,7 @@ services:
   doubtfire-web:
     container_name: doubtfire-web
     build: ../doubtfire-web
+    image: lmsdoubtfire/doubtfire-web:10.0.x-dev
     command: /bin/bash -c "npm install --force && npm run start-compose"
     ports:
       - "4200:4200"
@@ -164,27 +174,26 @@ EOF
 
 echo "✔ docker-compose.yml updated."
 
-### ----------------------------------------------------
-### 6. Detect Compose & build with correct flags
-### ----------------------------------------------------
-echo "🔍 Checking Docker Compose version..."
 
-COMPOSE_VERSION=$(docker compose version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+### ----------------------------------------------------
+### 7. Detect Compose capabilities
+### ----------------------------------------------------
+echo "🔍 Checking Docker Compose progress support..."
 
-if [[ "$COMPOSE_VERSION" -ge 2 ]]; then
-    echo "✨ Compose v2 detected — enabling pretty output"
+if docker compose up --help | grep -q -- "--progress"; then
+    echo "✨ Compose supports progress — enabling pretty output"
     COMPOSE_CMD="docker compose up -d --build --progress=tty"
 else
-    echo "⚠ Compose v2 NOT loaded — using safe fallback"
+    echo "⚠ Compose does NOT support --progress — using fallback"
     COMPOSE_CMD="docker compose up -d --build"
 fi
 
+
 ### ----------------------------------------------------
-### 7. Start environment
+### 8. Start environment
 ### ----------------------------------------------------
 echo "🚀 Starting Doubtfire DEV environment..."
-
-cd "$USER_HOME/doubtfire/doubtfire-deploy/development"
+cd /home/$SUDO_USER/doubtfire/doubtfire-deploy/development
 
 $COMPOSE_CMD
 
