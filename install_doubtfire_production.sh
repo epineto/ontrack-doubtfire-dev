@@ -8,7 +8,7 @@ echo "====================================================="
 ### ----------------------------------------------------
 ### 1. Install Docker Engine
 ### ----------------------------------------------------
-echo "📦 Installing Docker Engine..."
+echo "🐳 Installing Docker Engine..."
 
 apt-get update --fix-missing
 apt-get install -y \
@@ -31,8 +31,8 @@ apt-get update --fix-missing
 apt-get install -y \
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 
-systemctl enable docker
-systemctl start docker
+systemctl enable docker || true
+systemctl start docker || true
 
 echo "✔ Docker installed."
 
@@ -54,21 +54,22 @@ curl -L "$LATEST_COMPOSE" \
 
 chmod +x /usr/local/libexec/docker/cli-plugins/docker-compose
 
-# Remove any old version
+# cleanup old versions
+rm -f /usr/bin/docker-compose
 rm -f /usr/local/bin/docker-compose
-ln -s /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+ln -sf /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
 
-echo "✔ Docker Compose v2 installed:"
+echo "✔ Docker Compose installed:"
 docker compose version
 
 
 ### ----------------------------------------------------
-### 3. Clone Doubtfire Deploy (Production)
+### 3. Clone Doubtfire Deploy repo (Production)
 ### ----------------------------------------------------
-echo "📥 Cloning doubtfire-deploy repo (production)..."
+echo "📥 Cloning doubtfire-deploy repo..."
 
-mkdir -p /opt/doubtfire
-cd /opt/doubtfire
+mkdir -p /home/$SUDO_USER/doubtfire
+cd /home/$SUDO_USER/doubtfire
 
 git clone --branch 10.0.x --recurse-submodules https://github.com/doubtfire-lms/doubtfire-deploy
 
@@ -79,12 +80,11 @@ echo "✔ Repositories cloned."
 
 
 ### ----------------------------------------------------
-### 4. Patch Dockerfiles (Fix apt-get issues)
+### 4. Patch Dockerfiles to prevent apt download corruption
 ### ----------------------------------------------------
 echo "🔧 Patching Dockerfiles..."
 
 for file in $(find . -name Dockerfile); do
-  echo "Patching $file"
   sed -i 's/apt-get update/apt-get update --fix-missing/g' "$file"
   sed -i 's/apt-get install -y/apt-get install -y --fix-missing/g' "$file"
 done
@@ -93,45 +93,39 @@ echo "✔ Dockerfiles patched."
 
 
 ### ----------------------------------------------------
-### 5. Create PRODUCTION docker-compose.yml (NO PROXY)
+### 5. Generate NEW production docker-compose.yml (no proxy)
 ### ----------------------------------------------------
-echo "📝 Writing production docker-compose.yml..."
+echo "📝 Writing new PRODUCTION docker-compose.yml..."
 
-cat > /opt/doubtfire/doubtfire-deploy/production/docker-compose.yml <<'EOF'
+cat > /home/$SUDO_USER/doubtfire/doubtfire-deploy/production/docker-compose.yml <<'EOF'
 services:
   webserver:
-    platform: linux/amd64
     image: lmsdoubtfire/doubtfire-web:10.0.0-3
+    platform: linux/amd64
     ports:
-      - "8080:8080"
-    networks:
-      - backnet
+      - "8080:80"     # Correct mapping for Nginx
     restart: on-failure:5
 
   apiserver:
-    platform: linux/amd64
     image: lmsdoubtfire/apiserver:10.0.0-4
+    platform: linux/amd64
     env_file:
       - .env.production
     ports:
       - "3000:3000"
-    networks:
-      - backnet
     depends_on:
       - doubtfire-db
+    command: /bin/bash -c "bundle exec rails s -b 0.0.0.0"
     volumes:
       - student_work:/student-work
       - doubtfire_logs:/doubtfire/log
       - ./shared-files:/shared-files
       - ./shared-files/aliases:/etc/aliases:ro
-    command: /bin/bash -c "bundle exec rails s -b 0.0.0.0"
     restart: on-failure:5
 
   doubtfire-db:
     image: mariadb:10
     restart: always
-    networks:
-      - backnet
     environment:
       MARIADB_RANDOM_ROOT_PASSWORD: true
       MARIADB_USER: dfire
@@ -140,33 +134,26 @@ services:
     volumes:
       - mysql_db:/var/lib/mysql
 
-networks:
-  backnet:
-
 volumes:
-  latex_tmp: {}
-  redis_data: {}
   doubtfire_logs: {}
   mysql_db: {}
   student_work: {}
 EOF
 
-echo "✔ Production docker-compose.yml ready."
+echo "✔ production docker-compose.yml updated."
 
 
 ### ----------------------------------------------------
-### 6. Start Production services
+### 6. Start Production Environment
 ### ----------------------------------------------------
 echo "🚀 Starting Doubtfire PRODUCTION environment..."
 
-cd /opt/doubtfire/doubtfire-deploy/production
+cd /home/$SUDO_USER/doubtfire/doubtfire-deploy/production
 
-# NO MORE --progress FLAG
 docker compose up -d --build
 
 echo "====================================================="
 echo "   🎉 Doubtfire PRODUCTION is now running!"
-echo "====================================================="
-echo "   🌐 Web UI:   http://localhost:8080"
-echo "   🔧 API:      http://localhost:3000"
+echo "   🌐 Web UI: http://localhost:8080"
+echo "   🔧 API:     http://localhost:3000"
 echo "====================================================="
