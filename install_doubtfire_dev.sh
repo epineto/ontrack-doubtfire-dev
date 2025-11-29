@@ -2,203 +2,120 @@
 set -e
 
 echo "====================================================="
-echo "   🚀 Doubtfire LMS – Automated DEV Installer"
+echo " 🚀 OnTrack / Doubtfire – FULL DEV ENV Installer"
 echo "====================================================="
 
-### ----------------------------------------------------
-### 1. Install Docker Engine
-### ----------------------------------------------------
-echo "📦 Installing Docker Engine..."
+# Detect normal user
+NORMAL_USER=${SUDO_USER:-$USER}
+HOME_DIR=$(eval echo "~$NORMAL_USER")
 
-apt-get update --fix-missing
-apt-get install -y \
-    ca-certificates \
-    curl \
-    gnupg \
-    lsb-release
-
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
- | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-  https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" \
-  > /etc/apt/sources.list.d/docker.list
-
-apt-get update --fix-missing
-apt-get install -y \
-    docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-
-systemctl enable docker || true
-systemctl start docker || true
-
-echo "✔ Docker installed."
-
+echo "👤 Running setup for user: $NORMAL_USER"
+sleep 1
 
 ### ----------------------------------------------------
-### 2. Remove ALL old Compose versions
+### 1. Install required packages
 ### ----------------------------------------------------
-echo "🧹 Removing old Docker Compose installations..."
-
-apt remove -y docker-compose-plugin docker-compose || true
-
-rm -f /usr/bin/docker-compose
-rm -f /usr/local/bin/docker-compose
-rm -f /usr/libexec/docker/cli-plugins/docker-compose
-rm -f /usr/lib/docker/cli-plugins/docker-compose
-
-echo "✔ Old Compose removed."
-
+echo "📦 Installing base dependencies..."
+sudo apt-get update -y
+sudo apt-get install -y \
+  apt-transport-https \
+  ca-certificates \
+  curl \
+  gnupg \
+  lsb-release \
+  software-properties-common
 
 ### ----------------------------------------------------
-### 3. Install Docker Compose v2 (latest official)
+### 2. Install Docker Desktop
 ### ----------------------------------------------------
-echo "🔧 Installing Docker Compose v2..."
+echo "🐳 Installing Docker Desktop..."
 
-LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest \
-  | grep browser_download_url \
-  | grep 'docker-compose-linux-x86_64"' \
-  | cut -d '"' -f 4)
+curl -L "https://desktop.docker.com/linux/main/amd64/docker-desktop.deb" \
+  -o docker-desktop.deb
 
-mkdir -p /usr/lib/docker/cli-plugins
+sudo apt-get install -y ./docker-desktop.deb
+rm docker-desktop.deb
 
-curl -L "$LATEST_COMPOSE" \
-  -o /usr/lib/docker/cli-plugins/docker-compose
+sudo systemctl enable docker-desktop
+sudo systemctl start docker-desktop
 
-chmod +x /usr/lib/docker/cli-plugins/docker-compose
-
-ln -sf /usr/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
-
-echo "✔ Docker Compose v2 installed:"
-docker compose version
-
+echo "✔ Docker Desktop installed."
+sleep 1
 
 ### ----------------------------------------------------
-### 4. Clone Doubtfire Deploy
+### 3. Install VS Code
 ### ----------------------------------------------------
-echo "📥 Cloning doubtfire-deploy repo (dev)..."
+echo "🧩 Installing Visual Studio Code..."
 
-mkdir -p /home/$SUDO_USER/doubtfire
-cd /home/$SUDO_USER/doubtfire
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+sudo install -o root -g root -m 644 microsoft.gpg /etc/apt/keyrings/
+rm microsoft.gpg
 
-git clone --branch 10.0.x --recurse-submodules https://github.com/doubtfire-lms/doubtfire-deploy
+sudo sh -c 'echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] \
+https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list'
+
+sudo apt-get update -y
+sudo apt-get install -y code
+
+echo "✔ VS Code installed."
+
+### ----------------------------------------------------
+### 4. Install VS Code Dev Containers extension
+### ----------------------------------------------------
+echo "📦 Installing VS Code Dev Container extension..."
+
+sudo -u $NORMAL_USER code --install-extension ms-vscode-remote.remote-containers || true
+
+echo "✔ Dev Containers extension installed."
+
+### ----------------------------------------------------
+### 5. Pull official OnTrack dev container image
+### ----------------------------------------------------
+echo "🐳 Pulling official dev container image..."
+
+sudo docker pull lmsdoubtfire/formatif-dev-container:10.0.0-14
+
+echo "✔ Dev container image pulled."
+
+### ----------------------------------------------------
+### 6. Clone repositories
+### ----------------------------------------------------
+echo "📥 Cloning repositories into $HOME_DIR/ontrack..."
+
+mkdir -p $HOME_DIR/ontrack
+cd $HOME_DIR/ontrack
+
+sudo -u $NORMAL_USER git clone --branch 10.0.x https://github.com/doubtfire-lms/doubtfire-deploy
+sudo -u $NORMAL_USER git clone --branch 10.0.x https://github.com/doubtfire-lms/doubtfire-api
+sudo -u $NORMAL_USER git clone --branch 10.0.x https://github.com/doubtfire-lms/doubtfire-web
+sudo -u $NORMAL_USER git clone --branch 10.0.x https://github.com/doubtfire-lms/doubtfire-lti
+
+echo "✔ All repositories cloned."
+
+### ----------------------------------------------------
+### 7. Initialise submodules
+### ----------------------------------------------------
+echo "🔧 Initialising git submodules..."
 
 cd doubtfire-deploy
-git submodule update --init --recursive
+sudo -u $NORMAL_USER git submodule update --init --recursive
 
-echo "✔ Repositories cloned."
-
-
-### ----------------------------------------------------
-### 5. PATCH Dockerfiles for reliability
-### ----------------------------------------------------
-echo "🔧 Patching Dockerfiles for reliability..."
-
-for file in $(find . -name Dockerfile); do
-  echo "Patching: $file"
-
-  sed -i 's/apt-get update/apt-get update --fix-missing/g' "$file"
-  sed -i 's/apt-get install -y/apt-get install -y --fix-missing/g' "$file"
-done
-
-echo "✔ All Dockerfiles patched."
-
+echo "✔ Submodules ready."
 
 ### ----------------------------------------------------
-### 6. Replace docker-compose.yml with improved version
+### 8. Open VS Code & auto-trigger container
 ### ----------------------------------------------------
-echo "📝 Writing improved docker-compose.yml..."
+echo "🧑‍💻 Opening VS Code in dev environment..."
 
-cat > /home/$SUDO_USER/doubtfire/doubtfire-deploy/development/docker-compose.yml <<'EOF'
-services:
-  dev-db:
-    image: mariadb
-    container_name: df-compose-dev-db
-    environment:
-      MYSQL_ROOT_PASSWORD: db-root-password
-      MYSQL_DATABASE: doubtfire-dev
-      MYSQL_USER: dfire
-      MYSQL_PASSWORD: pwd
-    volumes:
-      - ../data/database:/var/lib/mysql
-    ports:
-      - "3306:3306"
+sudo -u $NORMAL_USER code $HOME_DIR/ontrack/doubtfire-deploy
 
-  redis-sidekiq:
-    image: redis:7.0
-    container_name: df-compose-redis-sidekiq
-    volumes:
-      - redis_sidekiq_data:/data
-    ports:
-      - "6379:6379"
-
-  doubtfire-api:
-    container_name: doubtfire-api
-    build: ../doubtfire-api
-    image: lmsdoubtfire/doubtfire-api:10.0.x-dev
-    ports:
-      - "3000:3000"
-    depends_on:
-      - dev-db
-      - redis-sidekiq
-    environment:
-      RAILS_ENV: development
-      DF_DEV_DB_HOST: df-compose-dev-db
-      DF_DEV_DB_USERNAME: dfire
-      DF_DEV_DB_PASSWORD: pwd
-      DF_DEV_DB_DATABASE: doubtfire-dev
-      DF_REDIS_SIDEKIQ_URL: redis://df-compose-redis-sidekiq:6379/0
-    volumes:
-      - ../doubtfire-api:/doubtfire
-      - ../data/student-work:/student-work
-
-  doubtfire-web:
-    container_name: doubtfire-web
-    build: ../doubtfire-web
-    image: lmsdoubtfire/doubtfire-web:10.0.x-dev
-    command: /bin/bash -c "npm install --force && npm run start-compose"
-    ports:
-      - "4200:4200"
-    depends_on:
-      - doubtfire-api
-    volumes:
-      - ../doubtfire-web:/doubtfire-web
-      - web_node_modules:/doubtfire-web/node_modules
-
-volumes:
-  web_node_modules:
-  redis_sidekiq_data:
-EOF
-
-echo "✔ docker-compose.yml updated."
-
-
-### ----------------------------------------------------
-### 7. Detect Compose capabilities
-### ----------------------------------------------------
-echo "🔍 Checking Docker Compose progress support..."
-
-if docker compose up --help | grep -q -- "--progress"; then
-    echo "✨ Compose supports progress — enabling pretty output"
-    COMPOSE_CMD="docker compose up -d --build --progress=tty"
-else
-    echo "⚠ Compose does NOT support --progress — using fallback"
-    COMPOSE_CMD="docker compose up -d --build"
-fi
-
-
-### ----------------------------------------------------
-### 8. Start environment
-### ----------------------------------------------------
-echo "🚀 Starting Doubtfire DEV environment..."
-cd /home/$SUDO_USER/doubtfire/doubtfire-deploy/development
-
-$COMPOSE_CMD
+sleep 2
 
 echo "====================================================="
-echo "   🎉 Doubtfire DEV is now running!"
-echo "   🔹 API: http://localhost:3000"
-echo "   🔹 Web: http://localhost:4200"
+echo " 🎉 Setup complete!"
+echo " 👉 In VS Code, click: 'Reopen in Container'"
+echo " ====================================================="
+echo "Once inside the container:"
+echo "  ▶ API:   rails s"
+echo "  ▶ WEB:   npm run start-compose"
 echo "====================================================="
